@@ -1,0 +1,48 @@
+# ZMR Brain — Python dependencies
+# Install: pip install -r requirements.txt
+# Python: 3.10+ (3.11+ recommended)
+
+# Config
+python-dotenv>=1.0.0
+
+# API and UI
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+streamlit>=1.28.0
+pydantic>=2.0.0
+
+# Google Cloud (Drive, optional GCS / Firestore / Pub/Sub)
+google-api-python-client>=2.100.0
+google-auth>=2.23.0
+google-cloud-storage>=2.14.0
+google-cloud-firestore>=2.14.0
+google-cloud-pubsub>=2.18.0
+
+# Vectors and embeddings
+pinecone>=5.0.0
+voyageai>=0.2.0
+
+# LLM and orchestration
+anthropic>=0.25.0
+langgraph>=0.2.50
+langchain-core>=0.3.0
+langsmith>=0.1.0
+
+# Database and lexical search
+psycopg2-binary>=2.9.9
+rank-bm25>=0.2.2
+
+# Document extraction
+openpyxl>=3.1.0
+python-docx>=1.1.0
+pypdf>=5.0.0
+
+# Scanned-PDF OCR (legal_doc_ingest_lib) — also install system Poppler + Tesseract on PATH
+pdf2image>=1.17.0
+pytesseract>=0.3.10
+
+# PDF → page images for Claude Vision when OCR is unavailable (legal_doc_ingest_lib)
+pymupdf>=1.24.0
+
+# MCP: HelloData tools (scripts/mcp_hellodata_server.py); requires Python 3.10+
+fastmcp>=2.14.0; python_version >= "3.10"

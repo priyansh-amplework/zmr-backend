@@ -1,0 +1,33 @@
+# Git and local tooling
+.git
+.github
+.cursor
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Virtual envs
+.venv
+venv
+env
+
+# Secrets and local env (never bake into images)
+.env
+.env.*
+!.env.example
+service-account-key.json
+zmr-ai-platform*.json
+*-60ae43e131b1*.json
+
+# Large / irrelevant for API image
+data
+agent-transcripts
+terminals
+*.log
+*.log.err
+
+# Optional: keep build context small (API does not import these at runtime)
+src
