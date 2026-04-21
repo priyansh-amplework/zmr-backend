@@ -6,7 +6,8 @@
 builder = "NIXPACKS"
 
 [deploy]
-startCommand = "python -m uvicorn zmr_brain.api:app --host 0.0.0.0 --port $PORT"
+# Railway runs startCommand without a shell unless you wrap it — otherwise $PORT is literal.
+startCommand = "sh -c 'exec python -m uvicorn zmr_brain.api:app --host 0.0.0.0 --port $PORT'"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"

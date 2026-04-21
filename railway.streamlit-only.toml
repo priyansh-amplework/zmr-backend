@@ -1,10 +1,6 @@
-# Frontend service (Streamlit only, Nixpacks — no Docker).
-# Deploy as a second Railway service. Point it at your API service with a variable:
-#   ZMR_API_BASE_URL = https://<your-backend-service>.up.railway.app
-# (no trailing slash). Chat calls POST /v1/query/graph on the backend; keep API keys on the backend.
-#
-# Optional on the backend service: ZMR_CORS_ORIGINS = https://<your-frontend>.up.railway.app
-# (only needed if a browser SPA calls the API directly; Streamlit server-side HTTP does not need CORS.)
+# Copy of frontend Railway config (same as railway.toml). Backend example:
+#   ZMR_API_BASE_URL = https://zmr-update-production.up.railway.app
+# (no trailing slash.)
 
 [build]
 builder = "NIXPACKS"
