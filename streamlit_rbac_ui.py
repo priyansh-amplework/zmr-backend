@@ -9,7 +9,10 @@ Run from repository root:
 
 from __future__ import annotations
 
+import json
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -89,6 +92,104 @@ def _rows_simple(chunks: List[Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+def _zmr_api_base() -> str:
+    """When set (e.g. https://zmr-api.up.railway.app), chat uses POST /v1/query/graph on the backend."""
+    return (os.getenv("ZMR_API_BASE_URL") or "").strip().rstrip("/")
+
+
+def _chunks_from_api_payload(rows: List[Any]) -> List[Any]:
+    from zmr_brain.retrieval import RetrievedChunk
+
+    out: List[RetrievedChunk] = []
+    for row in rows:
+        d = row if isinstance(row, dict) else dict(row)
+        out.append(
+            RetrievedChunk(
+                rank=int(d["rank"]),
+                score=d.get("score"),
+                vector_id=str(d["vector_id"]),
+                doc_name=d.get("doc_name"),
+                source_path=d.get("source_path"),
+                sheet_name=d.get("sheet_name"),
+                chunk_index=d.get("chunk_index"),
+                total_chunks=d.get("total_chunks"),
+                text=d.get("text"),
+                gcs_uri=d.get("gcs_uri"),
+                pinecone_metadata=dict(d.get("pinecone_metadata") or {}),
+                rrf_score=d.get("rrf_score"),
+                semantic_score=d.get("semantic_score"),
+                pinecone_rerank_score=d.get("pinecone_rerank_score"),
+            )
+        )
+    return out
+
+
+def _query_graph_http(
+    *,
+    user_text: str,
+    user_email: str,
+    top_k: int,
+    embed_model: Optional[str],
+    skip_query_reformulation: bool,
+    hybrid_rrf: bool,
+    rrf_k: int,
+    pinecone_rerank: bool,
+    rerank_pool: int,
+) -> Dict[str, Any]:
+    base = _zmr_api_base()
+    if not base:
+        raise RuntimeError("ZMR_API_BASE_URL is not set")
+    url = f"{base}/v1/query/graph"
+    payload: Dict[str, Any] = {
+        "query": user_text,
+        "user_email": user_email,
+        "user_role": "executive",
+        "top_k": top_k,
+        "embed_model": embed_model,
+        "filter_file_sha256": None,
+        # Full answer on the backend so this Streamlit service does not need ANTHROPIC_*.
+        "generate_answer": True,
+        "hybrid_rrf": hybrid_rrf,
+        "rrf_k": rrf_k,
+        "candidate_pool": None,
+        "pinecone_rerank": pinecone_rerank,
+        "rerank_pool": rerank_pool,
+        "pinecone_rerank_model": None,
+        "lexical_mode": "bm25",
+        "skip_query_reformulation": skip_query_reformulation,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    timeout = float(os.getenv("ZMR_API_TIMEOUT_SEC", "300"))
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Backend HTTP {e.code}: {err_body[:1200]}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Backend unreachable: {e}") from e
+    return json.loads(raw)
+
+
+def _final_from_graph_api(data: Dict[str, Any], *, user_text: str) -> Dict[str, Any]:
+    return {
+        "chunks": _chunks_from_api_payload(data.get("chunks") or []),
+        "error": data.get("error"),
+        "answer": data.get("answer"),
+        "meta_intro": bool(data.get("meta_intro")),
+        "refuse_out_of_scope": bool(data.get("refuse_out_of_scope")),
+        "retrieval_query": data.get("retrieval_query"),
+        "graph_trace": list(data.get("graph_trace") or []),
+        "query": user_text,
+    }
+
+
 def _init_session() -> None:
     if "messages" not in st.session_state:
         st.session_state.messages = [
@@ -117,6 +218,9 @@ def main() -> None:
     with st.sidebar:
         st.markdown('<p class="sidebar-title">ZMR Brain</p>', unsafe_allow_html=True)
         st.caption("3-tier access \u00b7 Pinecone + Postgres")
+        _api = _zmr_api_base()
+        if _api:
+            st.caption(f"Remote backend: `{_api}`")
 
         selected_name = st.selectbox(
             "Logged in as",
@@ -216,8 +320,6 @@ def main() -> None:
     from zmr_brain.query_graph import stream_query_graph
     from zmr_brain.tracing import init_langsmith_tracing
 
-    init_langsmith_tracing()
-
     user_text = prompt.strip()
     st.session_state.messages.append(
         {"role": "user", "content": user_text, "chunks": None, "error": None}
@@ -231,58 +333,82 @@ def main() -> None:
         status = st.status("Thinking\u2026", expanded=True)
         status.write("\U0001f50d Understanding your question\u2026")
 
-        try:
-            final = None
-            for node_name, state in stream_query_graph(
-                user_text,
-                "executive",
-                user_email=user_email,
-                top_k=top_k,
-                embed_model=em,
-                skip_query_reformulation=skip_query_reformulation,
-                # False: synthesize in the UI with stream_answer_to_placeholder (Claude token stream).
-                # True: full answer inside the graph (blocking); no token streaming in Streamlit.
-                generate_answer=False,
-                hybrid_rrf=hybrid_rrf,
-                rrf_k=int(rrf_k),
-                pinecone_rerank=pinecone_rerank,
-                rerank_pool=int(rerank_pool),
-                pinecone_rerank_model=None,
-                lexical_mode="bm25",
-            ):
-                final = state
-                if node_name == "route":
-                    status.update(label="Routing\u2026")
-                elif node_name == "reformulate":
-                    rq = (state.get("retrieval_query") or "").strip()
-                    uq = (state.get("query") or "").strip()
-                    if rq and uq and rq.lower() != uq.lower():
-                        status.write(f"\u270f\ufe0f Reformulated search \u2192 `{rq}`")
-                    else:
-                        status.write("\u270f\ufe0f Search query ready")
-                elif node_name == "retrieve":
-                    status.update(label="Gathering information\u2026")
-                    ch = state.get("chunks") or []
-                    err = state.get("error")
-                    if err and not ch:
-                        status.write(f"\U0001f4da Gathering information\u2026 _{err}_")
-                    else:
-                        idx_label = ", ".join(namespaces_for_email(user_email)) or PINECONE_INDEX
-                        status.write(
-                            f"\U0001f4da Retrieved **{len(ch)}** passage(s) from `{idx_label}`"
-                        )
-                    if ch and not err:
-                        trace = state.get("graph_trace") or []
-                        if any("rerank" in t for t in trace):
-                            status.write("\U0001f504 Reranked results")
-                        status.write("\U0001f4ac Generating answer\u2026")
-                        status.update(label="Generating answer\u2026")
-                elif node_name == "direct_reply":
-                    status.update(label="Preparing reply\u2026")
-                    status.write("\u2728 Finishing response\u2026")
+        init_langsmith_tracing()
 
-            if final is None:
-                raise RuntimeError("Query pipeline produced no result")
+        try:
+            final: Optional[Dict[str, Any]] = None
+            api_base = _zmr_api_base()
+            if api_base:
+                status.update(label="Calling backend\u2026")
+                status.write(f"\U0001f310 `{api_base}/v1/query/graph`")
+                data = _query_graph_http(
+                    user_text=user_text,
+                    user_email=user_email,
+                    top_k=top_k,
+                    embed_model=em,
+                    skip_query_reformulation=skip_query_reformulation,
+                    hybrid_rrf=hybrid_rrf,
+                    rrf_k=int(rrf_k),
+                    pinecone_rerank=pinecone_rerank,
+                    rerank_pool=int(rerank_pool),
+                )
+                final = _final_from_graph_api(data, user_text=user_text)
+                ch0 = final.get("chunks") or []
+                err0 = final.get("error")
+                if ch0 and not err0:
+                    idx_label = ", ".join(namespaces_for_email(user_email)) or PINECONE_INDEX
+                    status.write(f"\U0001f4da Retrieved **{len(ch0)}** passage(s) from `{idx_label}`")
+                status.write("\U0001f4ac Generating answer\u2026")
+                status.update(label="Generating answer\u2026")
+            else:
+                for node_name, state in stream_query_graph(
+                    user_text,
+                    "executive",
+                    user_email=user_email,
+                    top_k=top_k,
+                    embed_model=em,
+                    skip_query_reformulation=skip_query_reformulation,
+                    generate_answer=False,
+                    hybrid_rrf=hybrid_rrf,
+                    rrf_k=int(rrf_k),
+                    pinecone_rerank=pinecone_rerank,
+                    rerank_pool=int(rerank_pool),
+                    pinecone_rerank_model=None,
+                    lexical_mode="bm25",
+                ):
+                    final = state
+                    if node_name == "route":
+                        status.update(label="Routing\u2026")
+                    elif node_name == "reformulate":
+                        rq = (state.get("retrieval_query") or "").strip()
+                        uq = (state.get("query") or "").strip()
+                        if rq and uq and rq.lower() != uq.lower():
+                            status.write(f"\u270f\ufe0f Reformulated search \u2192 `{rq}`")
+                        else:
+                            status.write("\u270f\ufe0f Search query ready")
+                    elif node_name == "retrieve":
+                        status.update(label="Gathering information\u2026")
+                        ch = state.get("chunks") or []
+                        err = state.get("error")
+                        if err and not ch:
+                            status.write(f"\U0001f4da Gathering information\u2026 _{err}_")
+                        else:
+                            idx_label = ", ".join(namespaces_for_email(user_email)) or PINECONE_INDEX
+                            status.write(
+                                f"\U0001f4da Retrieved **{len(ch)}** passage(s) from `{idx_label}`"
+                            )
+                        if ch and not err:
+                            trace = state.get("graph_trace") or []
+                            if any("rerank" in t for t in trace):
+                                status.write("\U0001f504 Reranked results")
+                            status.write("\U0001f4ac Generating answer\u2026")
+                            status.update(label="Generating answer\u2026")
+                    elif node_name == "direct_reply":
+                        status.update(label="Preparing reply\u2026")
+                        status.write("\u2728 Finishing response\u2026")
+
+                if final is None:
+                    raise RuntimeError("Query pipeline produced no result")
         except Exception as e:
             status.update(label="Error", state="error", expanded=False)
             st.error(f"**Something went wrong:** {e}")

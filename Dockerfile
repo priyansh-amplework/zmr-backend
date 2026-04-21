@@ -12,6 +12,7 @@
 #
 # Suggested: --memory 2Gi --cpu 2 --timeout 300 --concurrency 2
 # (Streamlit + LangGraph + Claude are memory-heavy; lower concurrency avoids OOM.)
+# Railway: if logs show "exit 137" / "OOM-killed", the service RAM limit is too low—increase it in the dashboard.
 
 FROM python:3.11-slim-bookworm
 

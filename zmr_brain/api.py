@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -41,6 +42,18 @@ app = FastAPI(title="ZMR Brain", version="0.2.0")
 
 # Docker entrypoint creates this after API + Streamlit pass readiness (see docker/entrypoint.sh).
 _STRICT_ST_HEALTH_FILE = "/tmp/zmr-streamlit-health-strict"
+
+_cors_raw = (os.getenv("ZMR_CORS_ORIGINS") or "").strip()
+if _cors_raw:
+    _cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+    if _cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=_cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
 
 class QueryRequest(BaseModel):
@@ -100,6 +113,11 @@ class ChunkOut(BaseModel):
     rrf_score: Optional[float] = None
     semantic_score: Optional[float] = None
     pinecone_rerank_score: Optional[float] = None
+    sheet_name: Optional[str] = None
+    chunk_index: Optional[int] = None
+    total_chunks: Optional[int] = None
+    gcs_uri: Optional[str] = None
+    pinecone_metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class QueryResponse(BaseModel):
@@ -130,6 +148,11 @@ def _chunk_to_out(c: RetrievedChunk) -> ChunkOut:
         rrf_score=c.rrf_score,
         semantic_score=c.semantic_score,
         pinecone_rerank_score=c.pinecone_rerank_score,
+        sheet_name=c.sheet_name,
+        chunk_index=c.chunk_index,
+        total_chunks=c.total_chunks,
+        gcs_uri=c.gcs_uri,
+        pinecone_metadata=dict(c.pinecone_metadata or {}),
     )
 
 

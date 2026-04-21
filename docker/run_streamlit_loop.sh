@@ -25,6 +25,11 @@ while true; do
     wait "$CHILD"
     EXIT_CODE=$?
     CHILD=""
-    echo "entrypoint: Streamlit exited (code ${EXIT_CODE}), restarting in 2s..." >&2
+    # 137 = 128+9 (SIGKILL): almost always OOM killer in containers.
+    if [ "$EXIT_CODE" -eq 137 ]; then
+        echo "entrypoint: Streamlit was OOM-killed (exit 137). Raise Railway memory (try 2 GiB+); restarting in 2s..." >&2
+    else
+        echo "entrypoint: Streamlit exited (code ${EXIT_CODE}), restarting in 2s..." >&2
+    fi
     sleep 2
 done
