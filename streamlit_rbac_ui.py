@@ -136,10 +136,14 @@ def _query_graph_http(
     pinecone_rerank: bool,
     rerank_pool: int,
 ) -> Dict[str, Any]:
+    """
+    Uses POST /v1/query/graph/stream (NDJSON + heartbeats) so long graph steps do not hit
+    Railway's ~30s \"no response bytes\" limit on a single blocking JSON response.
+    """
     base = _zmr_api_base()
     if not base:
         raise RuntimeError("ZMR_API_BASE_URL is not set")
-    url = f"{base}/v1/query/graph"
+    url = f"{base}/v1/query/graph/stream"
     payload: Dict[str, Any] = {
         "query": user_text,
         "user_email": user_email,
@@ -159,22 +163,53 @@ def _query_graph_http(
         "skip_query_reformulation": skip_query_reformulation,
     }
     body = json.dumps(payload).encode("utf-8")
-    timeout = float(os.getenv("ZMR_API_TIMEOUT_SEC", "300"))
+    timeout = float(os.getenv("ZMR_API_TIMEOUT_SEC", "900"))
     req = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/x-ndjson, application/json",
+        },
         method="POST",
     )
+    last_state: Optional[Dict[str, Any]] = None
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
+            buf = b""
+            while True:
+                chunk = resp.read(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    obj = json.loads(line.decode("utf-8"))
+                    if obj.get("heartbeat"):
+                        continue
+                    if "error" in obj and "node" not in obj:
+                        raise RuntimeError(obj.get("error") or "backend stream error")
+                    if "state" in obj:
+                        last_state = obj["state"]
+            if buf.strip():
+                obj = json.loads(buf.decode("utf-8"))
+                if obj.get("heartbeat"):
+                    pass
+                elif "error" in obj and "node" not in obj:
+                    raise RuntimeError(obj.get("error") or "backend stream error")
+                elif "state" in obj:
+                    last_state = obj["state"]
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Backend HTTP {e.code}: {err_body[:1200]}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"Backend unreachable: {e}") from e
-    return json.loads(raw)
+    if last_state is None:
+        raise RuntimeError("Backend returned no graph state (empty NDJSON stream)")
+    return last_state
 
 
 def _final_from_graph_api(data: Dict[str, Any], *, user_text: str) -> Dict[str, Any]:

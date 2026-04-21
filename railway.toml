@@ -2,6 +2,7 @@
 # Backend is separate (already deployed). In Railway → this Streamlit service → Variables, set:
 #   ZMR_API_BASE_URL = https://zmr-update-production.up.railway.app
 # (no trailing slash; no path — not /health). Redeploy after saving.
+# Optional: ZMR_API_TIMEOUT_SEC=900 (Streamlit → backend stream read; default 900).
 #
 # Optional on the backend service: ZMR_CORS_ORIGINS = https://<your-frontend>.up.railway.app
 # (only if a browser app calls the API directly; Streamlit server → API does not need CORS.)
