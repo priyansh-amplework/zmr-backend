@@ -19,7 +19,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
+    MALLOC_ARENA_MAX=2
 
 WORKDIR /app
 
@@ -34,9 +35,9 @@ RUN pip install --upgrade pip \
 COPY zmr_brain/ ./zmr_brain/
 COPY scripts/db_url.py ./scripts/
 COPY streamlit_rbac_ui.py ./
-COPY docker/nginx.conf.template docker/entrypoint.sh ./docker/
+COPY docker/nginx.conf.template docker/entrypoint.sh docker/run_streamlit_loop.sh ./docker/
 
-RUN chmod +x /app/docker/entrypoint.sh \
+RUN chmod +x /app/docker/entrypoint.sh /app/docker/run_streamlit_loop.sh \
     && mkdir -p /tmp/streamlit-cache \
     && chmod 1777 /tmp/streamlit-cache
 

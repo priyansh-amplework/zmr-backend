@@ -29,7 +29,7 @@ export PORT API_PORT ST_PORT
 
 cleanup() {
     echo "entrypoint: shutting down..."
-    kill "$UV_PID" "$ST_PID" "$NGINX_PID" 2>/dev/null || true
+    kill "$UV_PID" "$ST_LOOP_PID" "$NGINX_PID" 2>/dev/null || true
     wait 2>/dev/null || true
 }
 trap cleanup TERM INT
@@ -37,13 +37,8 @@ trap cleanup TERM INT
 /usr/local/bin/python -m uvicorn zmr_brain.api:app --host 127.0.0.1 --port "$API_PORT" &
 UV_PID=$!
 
-/usr/local/bin/streamlit run /app/streamlit_rbac_ui.py \
-    --server.headless=true \
-    --server.address=127.0.0.1 \
-    --server.port="$ST_PORT" \
-    --browser.gatherUsageStats=false \
-    &
-ST_PID=$!
+/app/docker/run_streamlit_loop.sh &
+ST_LOOP_PID=$!
 
 echo "entrypoint: waiting for API (:$API_PORT) and Streamlit (:$ST_PORT)..."
 i=0
