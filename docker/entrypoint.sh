@@ -49,7 +49,7 @@ echo "entrypoint: waiting for API (:$API_PORT) and Streamlit (:$ST_PORT)..."
 i=0
 while [ "$i" -lt 120 ]; do
     if curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1 \
-        && curl -sf "http://127.0.0.1:${ST_PORT}/" >/dev/null 2>&1; then
+        && curl -sf "http://127.0.0.1:${ST_PORT}/_stcore/health" >/dev/null 2>&1; then
         echo "entrypoint: backends up, starting nginx on :${PORT}"
         break
     fi
@@ -62,6 +62,10 @@ if [ "$i" -ge 120 ]; then
     cleanup
     exit 1
 fi
+
+# Uvicorn is already running; env changes would not reach it. Touch a sentinel so /health
+# (read each request) also probes Streamlit — Railway then fails fast if the UI process dies.
+: > /tmp/zmr-streamlit-health-strict
 
 envsubst '${PORT} ${API_PORT} ${ST_PORT}' < /app/docker/nginx.conf.template > /tmp/nginx-zmr.conf
 nginx -c /tmp/nginx-zmr.conf -g "daemon off;" &

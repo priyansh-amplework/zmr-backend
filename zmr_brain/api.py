@@ -8,6 +8,9 @@ Run from repository root:
 
 from __future__ import annotations
 
+import os
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -15,6 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from zmr_brain.answer import answer_with_claude
@@ -34,6 +38,9 @@ from zmr_brain.query_routing import OUT_OF_SCOPE_REPLY, classify_query
 from zmr_brain.retrieval import RetrievedChunk, retrieve_for_query
 
 app = FastAPI(title="ZMR Brain", version="0.2.0")
+
+# Docker entrypoint creates this after API + Streamlit pass readiness (see docker/entrypoint.sh).
+_STRICT_ST_HEALTH_FILE = "/tmp/zmr-streamlit-health-strict"
 
 
 class QueryRequest(BaseModel):
@@ -127,8 +134,28 @@ def _chunk_to_out(c: RetrievedChunk) -> ChunkOut:
 
 
 @app.get("/health")
-def health() -> Dict[str, Any]:
-    return {"status": "ok", "service": "zmr-brain", "index": PINECONE_INDEX}
+def health():
+    body: Dict[str, Any] = {"status": "ok", "service": "zmr-brain", "index": PINECONE_INDEX}
+    strict_st = os.path.isfile(_STRICT_ST_HEALTH_FILE) or os.getenv(
+        "ZMR_CHECK_STREAMLIT_HEALTH", ""
+    ).strip().lower() in ("1", "true", "yes")
+    if strict_st:
+        st_port = (os.getenv("ST_PORT") or "8501").strip() or "8501"
+        url = f"http://127.0.0.1:{st_port}/_stcore/health"
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                if resp.status != 200:
+                    return JSONResponse(
+                        status_code=503,
+                        content={**body, "streamlit": "unhealthy", "http_status": resp.status},
+                    )
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            return JSONResponse(
+                status_code=503,
+                content={**body, "streamlit": "unreachable", "error": str(e)},
+            )
+        body["streamlit"] = "ok"
+    return body
 
 
 @app.get("/v1/access-tiers")

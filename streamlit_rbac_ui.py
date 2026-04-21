@@ -25,7 +25,6 @@ load_dotenv(ROOT / ".env")
 
 import streamlit as st
 
-from zmr_brain.answer import stream_answer_to_placeholder
 from zmr_brain.constants import (
     DEFAULT_RERANK_POOL,
     DEFAULT_RRF_K,
@@ -34,8 +33,6 @@ from zmr_brain.constants import (
     access_tier_for_email,
     namespaces_for_email,
 )
-from zmr_brain.query_graph import stream_query_graph
-from zmr_brain.tracing import init_langsmith_tracing
 
 TEAM_MEMBERS: Dict[str, str] = {
     "Zamir Kazi (CEO)": "zamir@zmrcapital.com",
@@ -109,7 +106,6 @@ def _init_session() -> None:
 
 
 def main() -> None:
-    init_langsmith_tracing()
     _init_session()
     st.set_page_config(
         page_title="ZMR Brain",
@@ -215,6 +211,12 @@ def main() -> None:
     prompt = st.chat_input("Message ZMR Brain\u2026")
     if not prompt or not prompt.strip():
         return
+
+    from zmr_brain.answer import stream_answer_to_placeholder
+    from zmr_brain.query_graph import stream_query_graph
+    from zmr_brain.tracing import init_langsmith_tracing
+
+    init_langsmith_tracing()
 
     user_text = prompt.strip()
     st.session_state.messages.append(
