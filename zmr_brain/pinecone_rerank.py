@@ -39,7 +39,9 @@ def rerank_chunks_pinecone(
     from zmr_brain.clients import get_pinecone_client
 
     m = (model or os.getenv("PINECONE_RERANK_MODEL", "pinecone-rerank-v0")).strip()
-    max_chars = int(os.getenv("PINECONE_RERANK_MAX_CHARS", "4000"))
+   # max_chars = int(os.getenv("PINECONE_RERANK_MAX_CHARS", "4000"))
+    max_chars = int(os.getenv("PINECONE_RERANK_MAX_CHARS", "2000"))
+
 
     documents: List[dict] = []
     for c in chunks:
