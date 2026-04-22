@@ -93,7 +93,7 @@ def _rows_simple(chunks: List[Any]) -> List[Dict[str, Any]]:
 
 
 def _zmr_api_base() -> str:
-    """When set (e.g. https://zmr-api.up.railway.app), chat uses POST /v1/query/graph on the backend."""
+    """When set (e.g. https://zmr-api.up.railway.app), chat uses POST /v1/query/graph/stream (NDJSON)."""
     return (os.getenv("ZMR_API_BASE_URL") or "").strip().rstrip("/")
 
 
@@ -137,8 +137,8 @@ def _query_graph_http(
     rerank_pool: int,
 ) -> Dict[str, Any]:
     """
-    Uses POST /v1/query/graph/stream (NDJSON + heartbeats) so long graph steps do not hit
-    Railway's ~30s \"no response bytes\" limit on a single blocking JSON response.
+    POST ``/v1/query/graph/stream`` (NDJSON + heartbeats). Uses buffered reads so lines are not
+    lost when the TCP stack splits chunks across ``readline`` boundaries.
     """
     base = _zmr_api_base()
     if not base:
@@ -173,6 +173,15 @@ def _query_graph_http(
         },
         method="POST",
     )
+    def _consume_ndjson_obj(obj: Dict[str, Any], last: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if obj.get("heartbeat"):
+            return last
+        if "error" in obj and "node" not in obj:
+            raise RuntimeError(f"Backend stream error: {obj.get('error')}")
+        if "node" in obj and "state" in obj:
+            return obj["state"]
+        return last
+
     last_state: Optional[Dict[str, Any]] = None
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -183,25 +192,15 @@ def _query_graph_http(
                     break
                 buf += chunk
                 while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    line = line.strip()
+                    raw_line, buf = buf.split(b"\n", 1)
+                    line = raw_line.strip()
                     if not line:
                         continue
-                    obj = json.loads(line.decode("utf-8"))
-                    if obj.get("heartbeat"):
-                        continue
-                    if "error" in obj and "node" not in obj:
-                        raise RuntimeError(obj.get("error") or "backend stream error")
-                    if "state" in obj:
-                        last_state = obj["state"]
+                    obj = json.loads(line.decode("utf-8", errors="replace"))
+                    last_state = _consume_ndjson_obj(obj, last_state)
             if buf.strip():
-                obj = json.loads(buf.decode("utf-8"))
-                if obj.get("heartbeat"):
-                    pass
-                elif "error" in obj and "node" not in obj:
-                    raise RuntimeError(obj.get("error") or "backend stream error")
-                elif "state" in obj:
-                    last_state = obj["state"]
+                obj = json.loads(buf.decode("utf-8", errors="replace"))
+                last_state = _consume_ndjson_obj(obj, last_state)
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Backend HTTP {e.code}: {err_body[:1200]}") from e
@@ -370,12 +369,13 @@ def main() -> None:
 
         init_langsmith_tracing()
 
+        api_state_raw: Optional[Dict[str, Any]] = None
         try:
             final: Optional[Dict[str, Any]] = None
             api_base = _zmr_api_base()
             if api_base:
                 status.update(label="Calling backend\u2026")
-                status.write(f"\U0001f310 `{api_base}/v1/query/graph`")
+                status.write(f"\U0001f310 `{api_base}/v1/query/graph/stream`")
                 data = _query_graph_http(
                     user_text=user_text,
                     user_email=user_email,
@@ -387,6 +387,7 @@ def main() -> None:
                     pinecone_rerank=pinecone_rerank,
                     rerank_pool=int(rerank_pool),
                 )
+                api_state_raw = data
                 final = _final_from_graph_api(data, user_text=user_text)
                 ch0 = final.get("chunks") or []
                 err0 = final.get("error")
@@ -487,6 +488,37 @@ def main() -> None:
                 }
             )
             return
+
+        api_dbg = _zmr_api_base()
+        if not chunks and not err and api_dbg:
+            raw_list = (api_state_raw or {}).get("chunks") or []
+            n_raw = len(raw_list)
+            n_nonempty = sum(
+                1
+                for c in raw_list
+                if isinstance(c, dict) and (str(c.get("text") or "").strip())
+            )
+            has_gcs_uri = any(
+                isinstance(c, dict) and (str(c.get("gcs_uri") or "").strip())
+                for c in raw_list
+            )
+            with st.expander("Why no retrieved passages? (backend checklist)", expanded=False):
+                st.markdown(
+                    "**What the API last returned (before this UI rebuilds rows):** "
+                    f"**{n_raw}** chunk object(s) in JSON; **{n_nonempty}** with non-empty `text`. "
+                    f"Has `gcs_uri` on at least one row: **{has_gcs_uri}**.\n\n"
+                    "- If **0** chunks but you expect hits → Pinecone/lexical returned nothing, or DB join failed "
+                    "(see retrieval-status).\n"
+                    "- If **chunks > 0** but **non-empty text = 0** and **gcs_uri = true** → almost always "
+                    "**GCS auth on the API** (`GOOGLE_APPLICATION_CREDENTIALS_JSON` on the **zmr-update** service).\n"
+                    "- If **chunks > 0**, text > 0, but UI still empty → redeploy this Streamlit from latest "
+                    "`streamlit_rbac_ui.py` and confirm the status line shows **`/v1/query/graph/stream`** (not "
+                    "`/v1/query/graph`).\n\n"
+                    f"1. Open `{api_dbg}/v1/retrieval-status` (check `gcs.mode` when that field exists).\n"
+                    "2. Set `ZMR_PINECONE_INDEX_*` on the API if Postgres `pinecone_index` names differ.\n"
+                    "3. Set `GOOGLE_APPLICATION_CREDENTIALS_JSON` on the **API** service for `gs://` bodies.\n"
+                    "4. `DATABASE_URL` on the API = DB you ingested."
+                )
 
         rq = (final.get("retrieval_query") or "").strip()
         uq = (final.get("query") or "").strip()
